@@ -104,10 +104,16 @@ if exist "setup_credentials.bat" (
     echo ❌ setup_credentials.bat - MISSING
 )
 
-if exist "run_app.bat" (
-    echo ✓ run_app.bat - Application launcher
+if exist "start.bat" (
+    echo ✓ start.bat - Application starter
 ) else (
-    echo ❌ run_app.bat - MISSING
+    echo ❌ start.bat - MISSING
+)
+
+if exist "stop.bat" (
+    echo ✓ stop.bat - Application stopper
+) else (
+    echo ❌ stop.bat - MISSING
 )
 
 echo.
@@ -150,7 +156,7 @@ if "%all_good%"=="1" (
     echo Battery Dashboard is properly configured and ready to run.
     echo.
     echo Next steps:
-    echo 1. Run: run_app.bat
+    echo 1. Run: start.bat
     echo 2. Access dashboard at: http://localhost:8050
     echo.
 ) else (
@@ -172,7 +178,7 @@ set /p "run_now=Do you want to try running the application now? (y/N): "
 if /i "%run_now%"=="y" (
     echo.
     echo 🚀 Attempting to start Battery Dashboard...
-    call run_app.bat
+    call start.bat
 )
 
 pause

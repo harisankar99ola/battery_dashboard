@@ -1,114 +1,103 @@
 @echo off
+title Battery Dashboard - Starting Services
 echo.
-echo ===============================================
-echo 🔋 BATTERY DATA DASHBOARD LAUNCHER
-echo ===============================================
+echo ================================================
+echo 🚀 STARTING BATTERY DASHBOARD SERVICES
+echo ================================================
 echo.
 
-REM Get the directory where this script is located
-set DASHBOARD_DIR=%~dp0
-cd /d "%DASHBOARD_DIR%"
+REM Change to the project directory
+cd /d "%~dp0"
 
-REM Kill any existing Python processes to avoid port conflicts
-echo 🧹 Cleaning up existing processes...
-taskkill /f /im python.exe >nul 2>&1
-
-REM Check if Python is installed
-echo 🔍 Checking Python installation...
+REM Check if Python is available
 python --version >nul 2>&1
-if errorlevel 1 (
+if %errorlevel% neq 0 (
     echo ❌ Python is not installed or not in PATH
-    echo Please install Python 3.10+ from https://python.org
-    echo.
+    echo Please install Python 3.8+ and try again
     pause
     exit /b 1
 )
-python --version
-echo ✅ Python detected
 
-REM Check if virtual environment exists
-if not exist "venv" (
-    echo.
-    echo 📦 Creating virtual environment...
-    python -m venv venv
-    if errorlevel 1 (
-        echo ❌ Failed to create virtual environment
-        echo.
-        pause
-        exit /b 1
+echo ✅ Python found
+echo.
+
+REM Check for virtual environment
+if exist ".venv\Scripts\activate.bat" (
+    echo 🔧 Activating virtual environment...
+    call .venv\Scripts\activate.bat
+    echo ✅ Virtual environment activated
+) else (
+    echo ⚠️  No virtual environment found - using system Python
+)
+
+echo.
+
+REM Check for required files
+if not exist "src\main.py" (
+    echo ❌ src\main.py not found
+    echo Please ensure you're in the correct directory
+    pause
+    exit /b 1
+)
+
+if not exist "src\backend\main_simple.py" (
+    echo ❌ src\backend\main_simple.py not found
+    echo Backend server file missing
+    pause
+    exit /b 1
+)
+
+if not exist "src\frontend\app.py" (
+    echo ❌ src\frontend\app.py not found
+    echo Frontend dashboard file missing
+    pause
+    exit /b 1
+)
+
+echo ✅ Required files found
+echo.
+
+REM Install dependencies if requirements.txt exists
+if exist "requirements.txt" (
+    echo 📦 Installing/updating dependencies...
+    python -m pip install -r requirements.txt --quiet
+    if %errorlevel% neq 0 (
+        echo ⚠️  Some dependencies may have issues, but continuing...
+    ) else (
+        echo ✅ Dependencies installed
     )
-    echo ✅ Virtual environment created
-)
-
-REM Activate virtual environment for dependency installation
-echo.
-echo 🔧 Setting up dependencies...
-call venv\Scripts\activate.bat
-
-REM Install backend dependencies
-echo 📥 Installing backend dependencies...
-cd backend
-pip install -r requirements.txt --quiet
-if errorlevel 1 (
-    echo ❌ Failed to install backend dependencies
     echo.
-    pause
-    exit /b 1
 )
-echo ✅ Backend dependencies installed
 
-REM Install frontend dependencies
-echo 📥 Installing frontend dependencies...
-cd ..\frontend
-pip install -r requirements.txt --quiet
-if errorlevel 1 (
-    echo ❌ Failed to install frontend dependencies
+REM Check for credentials
+echo 🔐 Checking for Google Drive credentials...
+if exist "credentials.json" (
+    echo ✅ credentials.json found
+) else if exist "client_secret*.json" (
+    echo ✅ Client secret file found
+) else (
+    echo ⚠️  No Google Drive credentials found
+    echo You may need to set up credentials using setup_credentials.bat
     echo.
-    pause
-    exit /b 1
 )
-echo ✅ Frontend dependencies installed
 
-REM Go back to main directory
-cd "%DASHBOARD_DIR%"
-
-echo.
-echo 🚀 Starting services...
-
-REM Start backend server in a new window that stays open
-start "Battery Dashboard API" /min cmd /c "cd /d "%DASHBOARD_DIR%" && call venv\Scripts\activate.bat && cd backend && echo Starting Backend API... && uvicorn main_simple:app --host 0.0.0.0 --port 8000 && pause"
-
-REM Wait for backend to start
-echo ⏳ Waiting for backend to initialize...
-timeout /t 8 /nobreak >nul
-
-REM Start frontend in a new window that stays open
-start "Battery Dashboard Frontend" /min cmd /c "cd /d "%DASHBOARD_DIR%" && call venv\Scripts\activate.bat && cd frontend && echo Starting Frontend Dashboard... && python app.py && pause"
-
-REM Wait for frontend to start
-echo ⏳ Waiting for frontend to initialize...
-timeout /t 5 /nobreak >nul
-
-echo.
-echo ===============================================
-echo ✨ DASHBOARD IS READY!
-echo ===============================================
-echo.
-echo 📊 Dashboard URL: http://localhost:8050
-echo 🔌 API Documentation: http://localhost:8000/docs
-echo.
-echo The dashboard is running in separate windows.
-echo Close those windows to stop the services.
-echo.
-echo Opening dashboard in your default browser...
+REM Stop any existing services
+echo 🛑 Stopping any existing services...
+taskkill /f /im python.exe >nul 2>&1
 timeout /t 2 /nobreak >nul
-start http://localhost:8050
 
 echo.
-echo Press any key to exit this launcher...
-pause >nul
+echo 🚀 Starting Battery Dashboard...
+echo.
+echo Backend will start on: http://localhost:8000
+echo Frontend will start on: http://localhost:8050
+echo.
+echo Press Ctrl+C to stop the services
+echo.
+
+REM Start the main application
+python src\main.py
 
 echo.
-echo Dashboard is still running in background windows.
-echo Close the API and Frontend windows to stop the services.
-echo.
+echo 🛑 Services stopped
+pause

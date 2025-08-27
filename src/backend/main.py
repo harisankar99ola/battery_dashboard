@@ -29,8 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize handlers
-drive_handler = GoogleDriveHandler()
+# Initialize handlers - will be set during startup
+drive_handler = None
 data_processor = BatteryDataProcessor()
 
 # Configuration
@@ -39,8 +39,30 @@ DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID", "1Ixvo_rJZ_9jni3R6HdAJnL_gvEF4tI5
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
+    global drive_handler
     print("🚀 Battery Dashboard API starting up...")
-    print(f"📁 Connected to Google Drive folder: {DRIVE_FOLDER_ID}")
+    
+    try:
+        # Initialize Google Drive handler with credentials from parent directory
+        import os
+        current_dir = os.getcwd()
+        # Look for credentials in parent directory
+        parent_dir = os.path.join(current_dir, '..', '..')
+        credentials_path = os.path.join(parent_dir, 'credentials.json')
+        
+        if os.path.exists(credentials_path):
+            os.chdir(parent_dir)  # Change to parent directory to find credentials.json
+            drive_handler = GoogleDriveHandler()
+            os.chdir(current_dir)  # Change back to original directory
+            print(f"✅ Google Drive handler initialized")
+            print(f"📁 Connected to Google Drive folder: {DRIVE_FOLDER_ID}")
+        else:
+            print(f"❌ Credentials file not found at: {credentials_path}")
+            print("⚠️  API will run in limited mode without Google Drive access")
+    except Exception as e:
+        print(f"❌ Failed to initialize Google Drive handler: {e}")
+        print("⚠️  API will run in limited mode without Google Drive access")
+        # Continue running even if Drive handler fails
 
 @app.get("/")
 async def root():
@@ -60,6 +82,9 @@ async def health_check():
 @app.get("/folders")
 async def get_folders():
     """Get all battery test folders (simplified)"""
+    if drive_handler is None:
+        raise HTTPException(status_code=503, detail="Google Drive service not available. Please check credentials.")
+    
     try:
         folders = drive_handler.get_battery_test_folders(DRIVE_FOLDER_ID)
         return folders
@@ -213,6 +238,9 @@ async def get_csv_files(
     search_pattern: Optional[str] = Query(None, description="Search pattern for file names")
 ):
     """Get CSV files from Google Drive"""
+    if drive_handler is None:
+        raise HTTPException(status_code=503, detail="Google Drive service not available. Please check credentials.")
+        
     try:
         if search_pattern:
             files = drive_handler.search_files(search_pattern, folder_id or DRIVE_FOLDER_ID)
@@ -221,6 +249,25 @@ async def get_csv_files(
         else:
             files = drive_handler.get_csv_files_in_folder(DRIVE_FOLDER_ID)
         
+        # Filter only CSV files
+        csv_files = [f for f in files if f.get('name', '').lower().endswith('.csv')]
+        
+        return {
+            "success": True,
+            "files": csv_files,
+            "count": len(csv_files)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching files: {str(e)}")
+
+@app.get("/all-csv-files")
+async def get_all_csv_files():
+    """Get all CSV files from Google Drive (frontend compatibility endpoint)"""
+    if drive_handler is None:
+        raise HTTPException(status_code=503, detail="Google Drive service not available. Please check credentials.")
+        
+    try:
+        files = drive_handler.get_csv_files_in_folder(DRIVE_FOLDER_ID)
         # Filter only CSV files
         csv_files = [f for f in files if f.get('name', '').lower().endswith('.csv')]
         

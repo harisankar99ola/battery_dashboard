@@ -158,7 +158,7 @@ REM Create Desktop shortcut
 echo.
 echo 🔗 Creating shortcuts...
 set "SHORTCUT_PATH=%USERPROFILE%\Desktop\Battery Dashboard.lnk"
-set "BATCH_PATH=%INSTALL_DIR%\run_app.bat"
+set "BATCH_PATH=%INSTALL_DIR%\start.bat"
 
 REM Create VBS script to create shortcut
 echo Set oWS = WScript.CreateObject("WScript.Shell") > create_shortcut.vbs
@@ -208,7 +208,7 @@ echo    • Follow the instructions to set up Google Drive API
 echo.
 echo 2. 🚀 LAUNCH THE APPLICATION:
 echo    • Double-click "Battery Dashboard" on your Desktop
-echo    • Or run: run_app.bat from the installation folder
+echo    • Or run: start.bat from the installation folder
 echo    • Or click Start → Battery Dashboard
 echo.
 echo 3. 🛑 STOP THE APPLICATION:

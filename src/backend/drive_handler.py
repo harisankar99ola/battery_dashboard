@@ -5,6 +5,7 @@ import numpy as np
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 import time
+import glob
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -17,10 +18,51 @@ SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 class GoogleDriveHandler:
     def __init__(self, credentials_file: str = None, token_file: str = 'token.json'):
-        self.credentials_file = credentials_file or 'client_secret_1022800559354-pa9vaklj5tco6oag3t9v1837nijlrt8l.apps.googleusercontent.com (1).json'
+        self.credentials_file = credentials_file or self._find_credentials_file()
         self.token_file = token_file
         self.service = None
         self._authenticate()
+
+    def _find_credentials_file(self):
+        """Find Google Drive credentials file with various possible names"""
+        # Look in current directory and parent directory
+        search_paths = ['.', '..']
+        
+        for search_path in search_paths:
+            # Try standard names first
+            standard_names = [
+                'credentials.json',
+                'client_secret.json', 
+                'client_secrets.json'
+            ]
+            
+            for name in standard_names:
+                file_path = os.path.join(search_path, name)
+                if os.path.exists(file_path):
+                    print(f"✅ Found credentials file: {file_path}")
+                    return file_path
+            
+            # Look for any file matching client_secret pattern
+            pattern = os.path.join(search_path, 'client_secret*.json')
+            matching_files = glob.glob(pattern)
+            if matching_files:
+                file_path = matching_files[0]  # Use the first match
+                print(f"✅ Found credentials file: {file_path}")
+                return file_path
+        
+        # If no file found, provide helpful error
+        print("❌ No Google Drive credentials file found!")
+        print("🔍 Searched for:")
+        print("   • credentials.json")
+        print("   • client_secret*.json")
+        print("   • client_secrets.json")
+        print("\n📁 Searched in:")
+        print("   • Current directory")
+        print("   • Parent directory")
+        print("\n💡 Please ensure your Google Drive credentials file is present")
+        print("   and named 'credentials.json' or starting with 'client_secret'")
+        
+        raise FileNotFoundError("Google Drive credentials file not found")
 
     def _authenticate(self):
         """Authenticate and build Google Drive service"""

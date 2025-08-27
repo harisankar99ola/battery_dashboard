@@ -102,9 +102,9 @@ def start_backend():
     
     try:
         # Use subprocess to start the backend
-        backend_script = backend_dir / "main.py"
+        backend_script = backend_dir / "main_simple.py"
         if not backend_script.exists():
-            backend_script = backend_dir / "main_simple.py"
+            backend_script = backend_dir / "main.py"
         
         if not backend_script.exists():
             print(f"❌ Backend script not found in {backend_dir}")

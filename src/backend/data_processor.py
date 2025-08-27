@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from scipy import signal
 from sklearn.preprocessing import StandardScaler
 import re
+import json
 
 class BatteryDataProcessor:
     """
@@ -12,6 +13,27 @@ class BatteryDataProcessor:
     
     def __init__(self):
         self.scaler = StandardScaler()
+    
+    def clean_for_json(self, obj):
+        """
+        Clean data for JSON serialization by handling NaN, inf, and -inf values
+        """
+        if isinstance(obj, dict):
+            return {k: self.clean_for_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self.clean_for_json(v) for v in obj]
+        elif isinstance(obj, (np.integer, np.floating)):
+            if np.isnan(obj) or np.isinf(obj):
+                return None
+            return obj.item()
+        elif isinstance(obj, np.ndarray):
+            return [self.clean_for_json(x) for x in obj.tolist()]
+        elif isinstance(obj, (float, int)):
+            if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+                return None
+            return obj
+        else:
+            return obj
     
     def process_csv_content(self, content: bytes, sample_size: Optional[int] = None) -> pd.DataFrame:
         """
@@ -52,50 +74,60 @@ class BatteryDataProcessor:
         
         for col in df.columns:
             col_lower = col.lower()
+            # Remove _avg suffix for pattern matching (since DMD extractor adds this)
+            col_base = col_lower.replace('_avg', '')
             
             # Temperature statistics - Battery_Temperature_M or Effective_Battery
-            if 'battery_temperature_m' in col_lower or 'effective_battery' in col_lower:
+            if 'battery_temperature_m' in col_base or 'effective_battery' in col_base:
                 column_types['temp_stats'].append(col)
             
-            # SOC and SOH - Pack_SOC and Pack_SoH columns
-            elif 'pack_soc' in col_lower or 'pack_soh' in col_lower:
+            # SOC and SOH - Pack_S columns (broader pattern to match Pack_SOC, Pack_SoH, etc.)
+            elif 'pack_s' in col_base:
                 column_types['soc_soh'].append(col)
             
             # Cell voltages - Cell_Voltage_Cell
-            elif 'cell_voltage_cell' in col_lower:
+            elif 'cell_voltage_cell' in col_base:
                 column_types['cell_voltages'].append(col)
             
-            # BMS temperature sensors - BMS00_Pack_
-            elif 'bms00_pack_' in col_lower:
+            # BMS temperature sensors - BMS00_Pack_ columns (broader pattern)
+            elif 'bms00_pack_' in col_base:
                 column_types['temp_cols'].append(col)
             
-            # Thermocouples - RH or LH columns, or any column with thermocouple/temp patterns
-            elif (('rh' in col_lower or 'lh' in col_lower) and 
-                  ('temp' in col_lower or 'thermocouple' in col_lower or 
-                   col_lower.startswith('rh') or col_lower.startswith('lh'))) or \
-                 ('thermocouple' in col_lower) or \
-                 ('temperature' in col_lower and ('sensor' in col_lower or 'probe' in col_lower)):
+            # Thermocouples - RH or LH columns (exact match to DMD extractor)
+            # Updated patterns to match actual column names like LH-C1-Busbar-T22_avg, RH-C2-Cell1-T94_avg
+            elif ('lh-' in col_lower and 't' in col_lower) or ('rh-' in col_lower and 't' in col_lower):
                 column_types['thermocouple'].append(col)
             
             # Cell balancing - _Balancing_Status_
-            elif '_balancing_status_' in col_lower:
+            elif '_balancing_status_' in col_base:
                 column_types['cell_balancing'].append(col)
             
             # Time columns
             elif col_lower in ['time', 'timestamp', 'index'] or 'time' in col_lower:
                 column_types['time'].append(col)
             
-            # Current
-            elif 'current' in col_lower or 'amp' in col_lower:
+            # Current - also look for patterns that might include current measurements
+            elif 'current' in col_lower or 'amp' in col_lower or 'battery_current' in col_base:
                 column_types['current'].append(col)
             
             # Power
-            elif 'power' in col_lower or 'watt' in col_lower:
+            elif 'power' in col_lower or 'watt' in col_lower or 'battery_power' in col_base:
                 column_types['power'].append(col)
         
         # Combine all temperature columns for unified temperature analysis
         all_temp_columns = column_types['temp_stats'] + column_types['temp_cols'] + column_types['thermocouple']
         column_types['temperature'] = all_temp_columns
+        
+        # Debug output to see what columns are being detected
+        print("🔍 Column detection debug:")
+        print(f"  Total columns: {len(df.columns)}")
+        print(f"  Sample columns: {list(df.columns)[:10]}")
+        print(f"  Thermocouple columns: {len(column_types['thermocouple'])} - {column_types['thermocouple'][:3]}...")
+        print(f"  Temp stats columns: {len(column_types['temp_stats'])} - {column_types['temp_stats'][:3]}...")
+        print(f"  Temp cols: {len(column_types['temp_cols'])} - {column_types['temp_cols'][:3]}...")
+        print(f"  SOC/SOH columns: {len(column_types['soc_soh'])} - {column_types['soc_soh'][:3]}...")
+        print(f"  Cell voltage columns: {len(column_types['cell_voltages'])} - {column_types['cell_voltages'][:3]}...")
+        print(f"  Total temperature columns: {len(all_temp_columns)}")
         
         return column_types
     
@@ -437,17 +469,46 @@ class BatteryDataProcessor:
                     'max': {col: float(val) if pd.notna(val) else None for col, val in max_vals.items()}
                 }
             
-            # Time range if time column exists
-            time_cols = [col for col in df.columns if 'time' in col.lower()]
+            # Time range calculation - handle Time column properly
+            time_cols = [col for col in df.columns if col.lower() in ['time', 'timestamp'] or 'time' in col.lower()]
+            duration_hours = 0
+            
+            print(f"🕐 Time column detection: found {len(time_cols)} time columns: {time_cols}")
+            
             if time_cols:
                 time_col = time_cols[0]
-                if pd.api.types.is_datetime64_any_dtype(df[time_col]):
-                    duration = (df[time_col].max() - df[time_col].min()).total_seconds()
-                    stats['time_range'] = {
-                        'start': df[time_col].min().isoformat() if hasattr(df[time_col].min(), 'isoformat') else str(df[time_col].min()),
-                        'end': df[time_col].max().isoformat() if hasattr(df[time_col].max(), 'isoformat') else str(df[time_col].max()),
-                        'duration': float(duration)
-                    }
+                print(f"🕐 Using time column: {time_col}, dtype: {df[time_col].dtype}")
+                try:
+                    if pd.api.types.is_datetime64_any_dtype(df[time_col]):
+                        duration_seconds = (df[time_col].max() - df[time_col].min()).total_seconds()
+                        duration_hours = duration_seconds / 3600
+                        print(f"🕐 Datetime column: duration = {duration_hours:.2f} hours")
+                        stats['time_range'] = {
+                            'start': df[time_col].min().isoformat() if hasattr(df[time_col].min(), 'isoformat') else str(df[time_col].min()),
+                            'end': df[time_col].max().isoformat() if hasattr(df[time_col].max(), 'isoformat') else str(df[time_col].max()),
+                            'duration_seconds': float(duration_seconds),
+                            'duration_hours': float(duration_hours)
+                        }
+                    else:
+                        # Handle numeric time columns (seconds from start)
+                        time_values = pd.to_numeric(df[time_col], errors='coerce').dropna()
+                        if len(time_values) > 0:
+                            duration_seconds = float(time_values.max() - time_values.min())
+                            duration_hours = duration_seconds / 3600
+                            print(f"🕐 Numeric time column: range {time_values.min():.1f} to {time_values.max():.1f}, duration = {duration_hours:.2f} hours")
+                            stats['time_range'] = {
+                                'start': float(time_values.min()),
+                                'end': float(time_values.max()),
+                                'duration_seconds': duration_seconds,
+                                'duration_hours': duration_hours
+                            }
+                except Exception as e:
+                    print(f"❌ Error processing time column {time_col}: {e}")
+            else:
+                print("❌ No time columns detected")
+            
+            # Always include duration_hours for frontend
+            stats['duration_hours'] = duration_hours
             
             return stats
             

@@ -1,13 +1,15 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from typing import Optional
 import pandas as pd
 import os
+import asyncio
 from dotenv import load_dotenv
 
 from drive_handler import GoogleDriveHandler
 from data_processor import BatteryDataProcessor
+from cache_manager import DataCacheManager
 
 # Load environment variables
 load_dotenv()
@@ -28,9 +30,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize handlers
-drive_handler = GoogleDriveHandler()
+# Initialize handlers - will be set during startup
+drive_handler = None
 data_processor = BatteryDataProcessor()
+cache_manager = DataCacheManager()
 
 # Configuration
 DRIVE_FOLDER_ID = "1Ixvo_rJZ_9jni3R6HdAJnL_gvEF4tI5l"
@@ -38,14 +41,56 @@ DRIVE_FOLDER_ID = "1Ixvo_rJZ_9jni3R6HdAJnL_gvEF4tI5l"
 @app.on_event("startup")
 async def startup_event():
     """Initialize the application"""
+    global drive_handler
     print("🚀 Battery Dashboard API starting up...")
+    
     try:
-        # Test Google Drive connection
-        folders = drive_handler.get_battery_test_folders(DRIVE_FOLDER_ID)
-        print(f"📁 Connected to Google Drive folder: {DRIVE_FOLDER_ID}")
-        print(f"🗂️ Found {len(folders)} battery test folders")
+        # Look for credentials in parent directory
+        current_dir = os.getcwd()
+        parent_dir = os.path.join(current_dir, '..', '..')
+        credentials_path = os.path.join(parent_dir, 'credentials.json')
+        
+        if os.path.exists(credentials_path):
+            # Change to parent directory temporarily for authentication
+            original_dir = os.getcwd()
+            os.chdir(parent_dir)
+            drive_handler = GoogleDriveHandler()
+            os.chdir(original_dir)
+            
+            # Test Google Drive connection
+            folders = drive_handler.get_battery_test_folders(DRIVE_FOLDER_ID)
+            print(f"✅ Connected to Google Drive folder: {DRIVE_FOLDER_ID}")
+            print(f"🗂️ Found {len(folders)} battery test folders")
+            
+            # Clear expired cache entries
+            cache_manager.clear_expired_cache()
+            
+            # Get popular files for preloading
+            try:
+                all_files = drive_handler.get_all_csv_files_recursive(DRIVE_FOLDER_ID)
+                if all_files:
+                    print(f"📁 Found {len(all_files)} CSV files total")
+                    
+                    # Sort by modification time (most recent first) and size (reasonable size files first)
+                    popular_files = sorted(all_files, 
+                                         key=lambda x: (x.get('modifiedTime', ''), -int(x.get('size', 0))))
+                    
+                    # Start background preloading of first 10 files
+                    import asyncio
+                    asyncio.create_task(cache_manager.preload_popular_files(drive_handler, popular_files, max_files=10))
+                    print("🔄 Started background preloading of popular files...")
+                    
+            except Exception as e:
+                print(f"⚠️ Could not start preloading: {e}")
+            
+        else:
+            print(f"❌ Credentials file not found at: {credentials_path}")
+            print("⚠️  API will run in limited mode without Google Drive access")
+            
     except Exception as e:
         print(f"❌ Error connecting to Google Drive: {e}")
+        print("⚠️  API will run in limited mode without Google Drive access")
+        drive_handler = None
 
 @app.get("/")
 async def root():
@@ -63,13 +108,23 @@ async def health_check():
 
 @app.get("/all-csv-files")
 async def get_all_csv_files():
-    """Get ALL CSV files from the entire folder structure"""
+    """Get ALL CSV files from the entire folder structure (with cache support)"""
+    if drive_handler is None:
+        raise HTTPException(status_code=503, detail="Google Drive service not available. Please check credentials and restart the application.")
+        
     try:
+        # Get cached files first
+        cached_files = cache_manager.get_all_cached_files_metadata()
+        
+        # Get all files from Drive
         all_files = drive_handler.get_all_csv_files_recursive(DRIVE_FOLDER_ID)
         
         # Format files with additional info for the frontend
         formatted_files = []
         for file in all_files:
+            # Check if file is cached
+            cached_info = next((cf for cf in cached_files if cf['file_id'] == file['id']), None)
+            
             # Calculate file size in MB
             size_mb = 0
             if file.get('size'):
@@ -78,24 +133,39 @@ async def get_all_csv_files():
                 except (ValueError, TypeError):
                     size_mb = 0
             
-            file_info = {
+            formatted_file = {
                 'id': file['id'],
                 'name': file['name'],
-                'full_path': file['full_path'],
-                'folder_path': file['folder_path'],
+                'display_name': file['name'],  # Add display_name for frontend
+                'size': file.get('size', '0'),
                 'size_mb': round(size_mb, 2),
-                'modified': file.get('modified', ''),
-                'display_name': f"{file['folder_path']}/{file['name']}" if file['folder_path'] != "Root" else file['name']
+                'modifiedTime': file.get('modifiedTime', ''),
+                'path': file.get('full_path', file['name']),
+                'folder_path': file.get('folder_path', 'Root'),
+                'parents': file.get('parents', []),
+                'cached': cached_info is not None,
+                'column_count': cached_info['column_count'] if cached_info else None,
+                'row_count': cached_info['row_count'] if cached_info else None,
+                'columns': cached_info['columns'] if cached_info else [],
+                'column_types': cached_info['column_types'] if cached_info else {}
             }
-            formatted_files.append(file_info)
+            formatted_files.append(formatted_file)
+        
+        # Sort by cached status (cached first), then by modification time
+        formatted_files.sort(key=lambda x: (not x['cached'], x.get('modifiedTime', '')), reverse=True)
+        
+        cache_stats = cache_manager.get_cache_stats()
         
         return {
-            "success": True,
             "files": formatted_files,
-            "total_count": len(formatted_files)
+            "total_count": len(formatted_files),
+            "cached_count": len(cached_files),
+            "cache_stats": cache_stats
         }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching all CSV files: {str(e)}")
+        print(f"Error in get_all_csv_files: {e}")
+        raise HTTPException(status_code=500, detail=f"Error fetching CSV files: {str(e)}")
 
 @app.get("/folders")
 async def get_folders():
@@ -178,33 +248,114 @@ async def get_file_data(
     file_id: str,
     selected_columns: Optional[str] = Query(None, description="Comma-separated list of columns"),
     preprocess: bool = Query(False, description="Apply preprocessing"),
-    resample: Optional[str] = Query(None, description="Resample rate")
+    resample: Optional[str] = Query(None, description="Resample rate"),
+    preview_only: bool = Query(False, description="Load only preview data for quick stats"),
+    max_rows: Optional[int] = Query(None, description="Maximum number of rows to load")
 ):
-    """Get processed data from a CSV file"""
+    """Get processed data from a CSV file (with cache support)"""
     try:
-        content = drive_handler.download_file_to_memory(file_id)
-        df = data_processor.process_csv_content(content)
+        # Try to get from cache first
+        df = cache_manager.get_cached_data(file_id)
+        
+        if df is None:
+            # Not in cache, download from Drive
+            if drive_handler is None:
+                raise HTTPException(status_code=503, detail="Google Drive service not available")
+            
+            print(f"Cache miss for {file_id}, downloading from Google Drive...")
+            
+            # Download and process the file
+            content = drive_handler.download_file_to_memory(file_id)
+            df = data_processor.process_csv_content(content)
+            
+            if df is None or df.empty:
+                raise HTTPException(status_code=404, detail="File not found or empty")
+            
+            # Cache the downloaded data
+            try:
+                file_info = drive_handler.get_file_info(file_id)
+                file_name = file_info.get('name', f'file_{file_id}')
+                cache_manager.cache_data(file_id, file_name, df, drive_handler)
+                print(f"✅ Cached data for {file_name}")
+            except Exception as e:
+                print(f"⚠️ Failed to cache data: {e}")
+        else:
+            print(f"Cache hit for {file_id}")
+        
+        # Make a copy for processing to avoid modifying cached data
+        df_processed = df.copy()
+        
+        # For preview mode, limit rows early for performance
+        if preview_only and max_rows:
+            df_processed = df_processed.head(max_rows)
         
         # Filter columns if specified
         if selected_columns:
             cols = [col.strip() for col in selected_columns.split(',')]
-            valid_cols = [col for col in cols if col in df.columns]
+            valid_cols = [col for col in cols if col in df_processed.columns]
             if valid_cols:
-                df = df[valid_cols]
+                df_processed = df_processed[valid_cols]
         
-        # Apply preprocessing if requested
-        if preprocess:
-            df = data_processor.apply_preprocessing(df)
+        # Apply preprocessing if requested (skip for preview mode for speed)
+        if preprocess and not preview_only:
+            df_processed = data_processor.apply_preprocessing(df_processed)
         
         # Apply resampling if requested  
-        if resample:
-            df = data_processor.resample_data(df, resample)
+        if resample and not preview_only:
+            df_processed = data_processor.resample_data(df_processed, resample)
         
         # Get column types and statistics
-        column_types = data_processor.identify_column_types(df)
-        stats = data_processor.calculate_statistics(df)
+        column_types_dict = data_processor.identify_column_types(df_processed)
         
-        return {
+        # Extract specific column lists (matching the cache manager approach)
+        time_cols = column_types_dict.get('time', [])
+        voltage_cols = column_types_dict.get('cell_voltages', [])
+        current_cols = column_types_dict.get('current', [])
+        temp_cols = (column_types_dict.get('temp_cols', []) + 
+                    column_types_dict.get('thermocouple', []) + 
+                    column_types_dict.get('temp_stats', []))
+        soc_cols = column_types_dict.get('soc_soh', [])
+        
+        # Build other_cols list
+        categorized_cols = set(time_cols + voltage_cols + current_cols + temp_cols + soc_cols)
+        other_cols = [col for col in df_processed.columns if col not in categorized_cols]
+        
+        # Create response format column types - include both old and new format for compatibility
+        column_types = {
+            "time_columns": time_cols,
+            "voltage_columns": voltage_cols,
+            "current_columns": current_cols,
+            "temperature_columns": temp_cols,
+            "soc_columns": soc_cols,
+            "other_columns": other_cols,
+            # Also include individual categories for frontend plot detection
+            "thermocouple": column_types_dict.get('thermocouple', []),
+            "temp_stats": column_types_dict.get('temp_stats', []),
+            "temp_cols": column_types_dict.get('temp_cols', []),
+            "cell_voltages": column_types_dict.get('cell_voltages', []),
+            "soc_soh": column_types_dict.get('soc_soh', []),
+            "temperature": column_types_dict.get('temperature', [])
+        }
+        stats = data_processor.calculate_statistics(df_processed)
+        
+        # For preview mode, return minimal data
+        if preview_only:
+            preview_data = {
+                "data": df_processed.head(100).to_dict('records'),  # Only first 100 rows
+                "index": df_processed.head(100).index.tolist() if hasattr(df_processed.index, 'tolist') else list(df_processed.head(100).index),
+                "columns": df_processed.columns.tolist(),
+                "statistics": {
+                    "shape": df_processed.shape,
+                    "column_types": column_types,
+                    "total_rows": len(df),  # Original full count for stats
+                    **stats
+                },
+                "preview_mode": True
+            }
+            # Clean data for JSON serialization
+            return data_processor.clean_for_json(preview_data)
+        
+        full_data = {
             "data": df.to_dict('records'),
             "index": df.index.tolist() if hasattr(df.index, 'tolist') else list(df.index),
             "columns": df.columns.tolist(),
@@ -214,6 +365,8 @@ async def get_file_data(
                 **stats
             }
         }
+        # Clean data for JSON serialization
+        return data_processor.clean_for_json(full_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
@@ -347,7 +500,7 @@ async def get_efficiency_analysis(file_id: str):
         if current_cols and voltage_cols and soc_cols:
             current_col = current_cols[0]
             voltage_col = voltage_cols[0] 
-            soc_col = soc_cols[0]
+            # Note: soc_col available for future efficiency calculations
             
             # Calculate energy during charge and discharge
             df_with_power = df.copy()
@@ -430,6 +583,44 @@ async def get_test_duration(file_id: str):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating duration: {str(e)}")
+
+@app.get("/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics and performance metrics"""
+    try:
+        stats = cache_manager.get_cache_stats()
+        cached_files = cache_manager.get_all_cached_files_metadata()
+        
+        # Add more detailed stats
+        stats['cached_files'] = []
+        for file_info in cached_files:
+            file_stats = {
+                'file_id': file_info['file_id'],
+                'file_name': file_info['file_name'],
+                'row_count': file_info['row_count'],
+                'column_count': file_info['column_count'],
+                'last_updated': file_info['last_updated'],
+                'memory_usage_mb': file_info['data_preview'].get('memory_usage_mb', 0)
+            }
+            stats['cached_files'].append(file_stats)
+        
+        return stats
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting cache stats: {str(e)}")
+
+@app.post("/cache/clear")
+async def clear_cache():
+    """Clear expired cache entries"""
+    try:
+        cache_manager.clear_expired_cache()
+        stats = cache_manager.get_cache_stats()
+        return {
+            "message": "Cache cleared successfully",
+            "stats": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error clearing cache: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

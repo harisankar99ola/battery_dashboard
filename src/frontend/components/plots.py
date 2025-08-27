@@ -24,33 +24,45 @@ class BatteryPlots:
                    [{"secondary_y": False}, {"secondary_y": False}]]
         )
         
-        # Thermocouple data
-        if column_types.get('thermocouple'):
-            for i, col in enumerate(column_types['thermocouple']):  # Show all thermocouple columns
-                fig.add_trace(
-                    go.Scatter(
-                        x=df.index, y=df[col], 
-                        name=col,  # Use actual column name
-                        line=dict(color=self.color_palette[i % len(self.color_palette)]),
-                        opacity=0.7
-                    ),
-                    row=1, col=1
-                )
+        # Thermocouple data - check both old and new keys
+        thermocouple_cols = column_types.get('thermocouple', []) + column_types.get('temperature_columns', [])
+        if thermocouple_cols:
+            for i, col in enumerate(thermocouple_cols):  # Show all thermocouple columns
+                if col in df.columns:  # Make sure column exists in dataframe
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df.index, y=df[col], 
+                            name=col,  # Use actual column name
+                            line=dict(color=self.color_palette[i % len(self.color_palette)]),
+                            opacity=0.7
+                        ),
+                        row=1, col=1
+                    )
         
-        # BMS temperature sensors
-        if column_types.get('temp_sensors'):
-            for i, col in enumerate(column_types['temp_sensors']):  # Show all BMS sensors
-                fig.add_trace(
-                    go.Scatter(
-                        x=df.index, y=df[col],
-                        name=col,  # Use actual column name
-                        line=dict(color=self.color_palette[i % len(self.color_palette)])
-                    ),
-                    row=1, col=2
-                )
+        # BMS temperature sensors - include both temp_sensors and temp_cols
+        bms_temp_cols = (column_types.get('temp_sensors', []) + 
+                        column_types.get('temp_cols', []) + 
+                        column_types.get('temperature_columns', []))
+        if bms_temp_cols:
+            for i, col in enumerate(bms_temp_cols):  # Show all BMS sensors
+                if col in df.columns:  # Make sure column exists in dataframe
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df.index, y=df[col],
+                            name=col,  # Use actual column name
+                            line=dict(color=self.color_palette[i % len(self.color_palette)])
+                        ),
+                        row=1, col=2
+                    )
         
-        # Temperature statistics (if available)
-        temp_cols = column_types.get('thermocouple', []) + column_types.get('temp_sensors', [])
+        # Temperature statistics (if available) - include all temperature column types
+        temp_cols = (column_types.get('thermocouple', []) + 
+                    column_types.get('temp_sensors', []) + 
+                    column_types.get('temp_cols', []) + 
+                    column_types.get('temp_stats', []) +
+                    column_types.get('temperature_columns', []))
+        # Filter to only columns that actually exist in the dataframe
+        temp_cols = [col for col in temp_cols if col in df.columns]
         if temp_cols:
             temp_data = df[temp_cols]
             temp_mean = temp_data.mean(axis=1)
@@ -218,12 +230,15 @@ class BatteryPlots:
                 )
                 return fig
             
-            # 1. Line chart - SOC vs Temperature for each sensor
+            # 1. Line chart - SOC vs Temperature for selected sensors (limit for clarity)
             colors = px.colors.qualitative.Set3
             heatmap_data = []
             sensor_names = []
             
-            for i, (sensor, temps) in enumerate(temp_data.items()):
+            # Limit to first 8 sensors for line chart to reduce congestion
+            limited_sensors = list(temp_data.items())[:8]
+            
+            for i, (sensor, temps) in enumerate(limited_sensors):
                 # Filter out None values for line plot
                 valid_indices = [j for j, temp in enumerate(temps) if temp is not None]
                 valid_soc = [soc_points[j] for j in valid_indices]
@@ -237,21 +252,27 @@ class BatteryPlots:
                             legend_name = f"{parts[0]}-{parts[1]}-{parts[2]}"
                         else:
                             legend_name = sensor.replace('_avg', '')
+                    elif 'BMS00_Pack_Temperature' in sensor:
+                        temp_num = sensor.split('_')[-2] if '_' in sensor else ''
+                        legend_name = f"BMS-T{temp_num}"
                     else:
-                        legend_name = sensor.replace('_avg', '').replace('Temperature', 'Temp')
+                        legend_name = sensor.replace('_avg', '').replace('Temperature', 'Temp')[:12]
                     
                     fig.add_trace(
                         go.Scatter(
                             x=valid_soc, y=valid_temps,
                             mode='lines+markers',
                             name=legend_name,
-                            line=dict(color=colors[i % len(colors)]),
+                            line=dict(color=colors[i % len(colors)], width=2),
                             marker=dict(size=4),
-                            legendgroup="temperature"
+                            legendgroup="temperature",
+                            showlegend=True
                         ),
                         row=1, col=1
                     )
-                
+            
+            # Prepare heatmap data for ALL sensors (not limited)
+            for sensor, temps in temp_data.items():
                 # Prepare data for heatmap (include None as NaN)
                 heatmap_data.append(temps)
                 # Create very short sensor names for heatmap y-axis
@@ -262,87 +283,26 @@ class BatteryPlots:
                         short_name = f"{parts[0]}-{parts[1]}-{parts[2]}"
                     else:
                         short_name = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else sensor[:10]
-                elif 'Pack_Temperature' in sensor:
-                    # Extract number: BMSXX_Pack_Temperature_XX_avg -> PackTemp_XX
+                elif 'BMS00_Pack_Temperature' in sensor:
+                    # Extract number: BMS00_Pack_Temperature_XX_avg -> BMS-XX
                     if 'Pack_Temperature_' in sensor:
                         temp_num = sensor.split('Pack_Temperature_')[1].split('_')[0]
-                        short_name = f"PackTemp_{temp_num}"
+                        short_name = f"BMS-{temp_num}"
                     else:
-                        short_name = "PackTemp"
+                        short_name = "BMS"
                 elif 'Battery_Temperature' in sensor:
                     if 'Min' in sensor:
-                        short_name = "BattTempMin"
+                        short_name = "BattMin"
                     elif 'Max' in sensor:
-                        short_name = "BattTempMax"
+                        short_name = "BattMax"
                     else:
-                        short_name = "BattTemp"
+                        short_name = "Batt"
                 elif 'Effective_Battery_Temperature' in sensor:
-                    short_name = "EffBattTemp"
+                    short_name = "EffBatt"
                 else:
-                    short_name = sensor.replace('_avg', '')[:12]
+                    short_name = sensor.replace('_avg', '')[:10]
                 
-                sensor_names.append(short_name)            # 2. Heatmap - SOC vs Temperature
-            if heatmap_data:
-                fig.add_trace(
-                    go.Heatmap(
-                        z=heatmap_data,
-                        x=soc_points,
-                        y=sensor_names,
-                        colorscale='Viridis',
-                        showscale=True,
-                        hoverongaps=False,
-                        hovertemplate='SOC: %{x}%<br>Sensor: %{y}<br>Temp: %{z:.1f}°C<extra></extra>'
-                    ),
-                    row=1, col=2
-                )
-            
-            # 3. Temperature distribution by SOC ranges
-            if temp_data:
-                # Group SOC into ranges: 0-25%, 25-50%, 50-75%, 75-100%
-                soc_ranges = ['0-25%', '25-50%', '50-75%', '75-100%']
-                
-                for sensor, temps in list(temp_data.items())[:5]:  # First 5 sensors for clarity
-                    range_temps = [
-                        [temps[j] for j in range(0, 6) if temps[j] is not None],      # 0-25%
-                        [temps[j] for j in range(5, 11) if temps[j] is not None],    # 25-50%
-                        [temps[j] for j in range(10, 16) if temps[j] is not None],   # 50-75%
-                        [temps[j] for j in range(15, 21) if temps[j] is not None]    # 75-100%
-                    ]
-                    
-                    for k, (soc_range, range_temps_list) in enumerate(zip(soc_ranges, range_temps)):
-                        if range_temps_list:
-                            fig.add_trace(
-                                go.Box(
-                                    y=range_temps_list,
-                                    name=f"{sensor[:15]}...",  # Truncated name
-                                    x=[soc_range] * len(range_temps_list),
-                                    boxpoints='all',
-                                    jitter=0.3,
-                                    pointpos=-1.8
-                                ),
-                                row=2, col=1
-                            )
-                    break  # Only show one sensor for box plot clarity
-            
-            # 4. Summary statistics
-            if temp_data:
-                summary_text = []
-                for sensor, temps in temp_data.items():
-                    valid_temps = [t for t in temps if t is not None]
-                    if valid_temps:
-                        min_temp = min(valid_temps)
-                        max_temp = max(valid_temps)
-                        avg_temp = sum(valid_temps) / len(valid_temps)
-                        summary_text.append(f"{sensor[:20]}: {min_temp:.1f}-{max_temp:.1f}°C (avg: {avg_temp:.1f}°C)")
-                
-                fig.add_annotation(
-                    text="<br>".join(summary_text[:10]),  # First 10 sensors
-                    xref="x4", yref="y4",
-                    x=0.5, y=0.5,
-                    showarrow=False,
-                    font=dict(size=10),
-                    align="left"
-                )
+                sensor_names.append(short_name)
             
             # 2. Heatmap - SOC vs Temperature
             if heatmap_data:
@@ -353,8 +313,21 @@ class BatteryPlots:
                         y=sensor_names,
                         colorscale='Viridis',
                         showscale=True,
+                        colorbar=dict(
+                            x=0.47,  # Position colorbar between subplots
+                            y=0.85,  # Position at top
+                            len=0.35,  # Make it shorter
+                            thickness=12,  # Make it thinner
+                            title=dict(
+                                text="°C",
+                                side="right",
+                                font=dict(size=10)
+                            ),
+                            tickfont=dict(size=9)
+                        ),
                         hoverongaps=False,
-                        hovertemplate='SOC: %{x}%<br>Sensor: %{y}<br>Temp: %{z:.1f}°C<extra></extra>'
+                        hovertemplate='SOC: %{x}%<br>Sensor: %{y}<br>Temp: %{z:.1f}°C<extra></extra>',
+                        showlegend=False  # Don't show in legend
                     ),
                     row=1, col=2
                 )
@@ -407,6 +380,112 @@ class BatteryPlots:
                     align="left"
                 )
             
+            # 3. Temperature distribution by SOC ranges
+            if temp_data:
+                # Group SOC into ranges: 0-25%, 25-50%, 50-75%, 75-100%
+                soc_ranges = ['0-25%', '25-50%', '50-75%', '75-100%']
+                
+                for sensor, temps in list(temp_data.items())[:5]:  # First 5 sensors for clarity
+                    range_temps = [
+                        [temps[j] for j in range(0, 6) if temps[j] is not None],      # 0-25%
+                        [temps[j] for j in range(5, 11) if temps[j] is not None],    # 25-50%
+                        [temps[j] for j in range(10, 16) if temps[j] is not None],   # 50-75%
+                        [temps[j] for j in range(15, 21) if temps[j] is not None]    # 75-100%
+                    ]
+                    
+                    for k, (soc_range, range_temps_list) in enumerate(zip(soc_ranges, range_temps)):
+                        if range_temps_list:
+                            fig.add_trace(
+                                go.Box(
+                                    y=range_temps_list,
+                                    name=f"{sensor[:15]}...",  # Truncated name
+                                    x=[soc_range] * len(range_temps_list),
+                                    boxpoints='all',
+                                    jitter=0.3,
+                                    pointpos=-1.8
+                                ),
+                                row=2, col=1
+                            )
+                    break  # Only show one sensor for box plot clarity
+            
+            # 4. Summary statistics as bar chart
+            if temp_data:
+                sensor_summary = []
+                min_temps = []
+                max_temps = []
+                avg_temps = []
+                
+                # Calculate stats for first 8 sensors to fit in plot
+                for sensor, temps in list(temp_data.items())[:8]:
+                    valid_temps = [t for t in temps if t is not None]
+                    if valid_temps:
+                        min_temp = min(valid_temps)
+                        max_temp = max(valid_temps)
+                        avg_temp = sum(valid_temps) / len(valid_temps)
+                        
+                        # Create short sensor name for x-axis
+                        if 'LH-' in sensor or 'RH-' in sensor:
+                            parts = sensor.split('-')
+                            short_name = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else sensor[:8]
+                        elif 'Pack_Temperature' in sensor:
+                            if 'Pack_Temperature_' in sensor:
+                                temp_num = sensor.split('Pack_Temperature_')[1].split('_')[0]
+                                short_name = f"Pack{temp_num}"
+                            else:
+                                short_name = "Pack"
+                        elif 'Battery_Temperature' in sensor:
+                            if 'Min' in sensor:
+                                short_name = "BattMin"
+                            elif 'Max' in sensor:
+                                short_name = "BattMax"
+                            else:
+                                short_name = "Batt"
+                        else:
+                            short_name = sensor.replace('_avg', '').replace('Temperature', 'Temp')[:8]
+                        
+                        sensor_summary.append(short_name)
+                        min_temps.append(min_temp)
+                        max_temps.append(max_temp)
+                        avg_temps.append(avg_temp)
+                
+                if sensor_summary:
+                    # Add min temperatures
+                    fig.add_trace(
+                        go.Bar(
+                            x=sensor_summary,
+                            y=min_temps,
+                            name='Min Temp',
+                            marker_color='lightblue',
+                            opacity=0.7
+                        ),
+                        row=2, col=2
+                    )
+                    
+                    # Add max temperatures
+                    fig.add_trace(
+                        go.Bar(
+                            x=sensor_summary,
+                            y=max_temps,
+                            name='Max Temp',
+                            marker_color='red',
+                            opacity=0.7
+                        ),
+                        row=2, col=2
+                    )
+                    
+                    # Add average temperatures as line
+                    fig.add_trace(
+                        go.Scatter(
+                            x=sensor_summary,
+                            y=avg_temps,
+                            mode='lines+markers',
+                            name='Avg Temp',
+                            line=dict(color='orange', width=3),
+                            marker=dict(size=8)
+                        ),
+                        row=2, col=2
+                    )
+            
             fig.update_layout(
                 height=800,
                 title_text="SOC vs Temperature Analysis",
@@ -415,14 +494,27 @@ class BatteryPlots:
                 legend=dict(
                     orientation="v",
                     yanchor="top",
-                    y=1,
+                    y=0.98,
                     xanchor="left",
-                    x=1.02,
-                    font=dict(size=10),
+                    x=1.02,  # Position legend on the right
+                    font=dict(size=8),
                     itemsizing="constant",
-                    itemwidth=30
+                    itemwidth=30,  # Fixed: minimum value is 30
+                    bgcolor="rgba(255,255,255,0.8)",
+                    bordercolor="rgba(0,0,0,0.2)",
+                    borderwidth=1
                 ),
-                margin=dict(l=150, r=200, t=80, b=80)  # Increase left and right margins
+                margin=dict(l=100, r=200, t=80, b=80),  # Optimized margins
+                annotations=[
+                    dict(
+                        text="Showing top 8 sensors in line chart.<br>All sensors shown in heatmap.",
+                        xref="paper", yref="paper",
+                        x=0.02, y=0.98,
+                        showarrow=False,
+                        font=dict(size=9, color="gray"),
+                        align="left"
+                    )
+                ]
             )
             
             # Update axes labels with better spacing
@@ -432,11 +524,13 @@ class BatteryPlots:
             fig.update_yaxes(
                 title_text="Sensors", 
                 row=1, col=2,
-                tickfont=dict(size=9),  # Smaller font for sensor names
+                tickfont=dict(size=8),  # Smaller font for sensor names
                 automargin=True
             )
             fig.update_xaxes(title_text="SOC Range", row=2, col=1)
             fig.update_yaxes(title_text="Temperature (°C)", row=2, col=1)
+            fig.update_xaxes(title_text="Sensors", row=2, col=2)
+            fig.update_yaxes(title_text="Temperature (°C)", row=2, col=2)
             
             return fig
         
@@ -579,7 +673,10 @@ class BatteryPlots:
                            plot_type: str = 'temperature') -> go.Figure:
         """Create heatmap for temperature or voltage data"""
         if plot_type == 'temperature':
-            cols = column_types.get('thermocouple', []) + column_types.get('temp_sensors', [])
+            cols = (column_types.get('thermocouple', []) + 
+                   column_types.get('temp_sensors', []) + 
+                   column_types.get('temp_cols', []) + 
+                   column_types.get('temp_stats', []))
             title = "Temperature Heatmap Over Time"
             colorbar_title = "Temperature (°C)"
         else:

@@ -6,7 +6,34 @@
 credentials.json
 client_secret*.json
 token.json
+token_upload.json
 client_secrets.json
+
+# Cache and temporary data
+cache/
+data_cache/
+*.cache
+*.pkl
+*.pickle
+temp/
+tmp/
+
+# Battery Test Data - Sensitive and large files
+# Preloaded data folders and files
+data/
+preloaded/
+csv_files/
+battery_data/
+test_data/
+*.csv
+*.xlsx
+*.xls
+
+# AutoLion input files - Sensitive battery data
+Autoliion*.csv
+*Cell_*.csv
+*Battery_Pack*.csv
+*Deg*.csv
 
 # Environment Variables
 .env
