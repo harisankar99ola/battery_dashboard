@@ -1,0 +1,462 @@
+import pandas as pd
+import numpy as np
+from typing import Dict, List, Optional, Tuple, Any
+from scipy import signal
+from sklearn.preprocessing import StandardScaler
+import re
+
+class BatteryDataProcessor:
+    """
+    Process battery data following the same methodology as dmd_extractor.py
+    """
+    
+    def __init__(self):
+        self.scaler = StandardScaler()
+    
+    def process_csv_content(self, content: bytes, sample_size: Optional[int] = None) -> pd.DataFrame:
+        """
+        Process CSV content from bytes and return a pandas DataFrame
+        """
+        try:
+            # Convert bytes to string
+            csv_string = content.decode('utf-8')
+            
+            # Read CSV from string
+            df = pd.read_csv(pd.io.common.StringIO(csv_string))
+            
+            # If sample_size is specified, return only a sample
+            if sample_size and len(df) > sample_size:
+                df = df.head(sample_size)
+                
+            return df
+            
+        except Exception as e:
+            raise Exception(f"Error processing CSV content: {str(e)}")
+    
+    def identify_column_types(self, df: pd.DataFrame) -> Dict[str, List[str]]:
+        """
+        Identify column types based on naming patterns from dmd_extractor
+        Updated to match the exact methodology from dmd_extraction_automator.py
+        """
+        column_types = {
+            'temp_stats': [],
+            'soc_soh': [],
+            'cell_voltages': [],
+            'temp_cols': [],
+            'thermocouple': [],
+            'cell_balancing': [],
+            'time': [],
+            'current': [],
+            'power': []
+        }
+        
+        for col in df.columns:
+            col_lower = col.lower()
+            
+            # Temperature statistics - Battery_Temperature_M or Effective_Battery
+            if 'battery_temperature_m' in col_lower or 'effective_battery' in col_lower:
+                column_types['temp_stats'].append(col)
+            
+            # SOC and SOH - Pack_SOC and Pack_SoH columns
+            elif 'pack_soc' in col_lower or 'pack_soh' in col_lower:
+                column_types['soc_soh'].append(col)
+            
+            # Cell voltages - Cell_Voltage_Cell
+            elif 'cell_voltage_cell' in col_lower:
+                column_types['cell_voltages'].append(col)
+            
+            # BMS temperature sensors - BMS00_Pack_
+            elif 'bms00_pack_' in col_lower:
+                column_types['temp_cols'].append(col)
+            
+            # Thermocouples - RH or LH columns, or any column with thermocouple/temp patterns
+            elif (('rh' in col_lower or 'lh' in col_lower) and 
+                  ('temp' in col_lower or 'thermocouple' in col_lower or 
+                   col_lower.startswith('rh') or col_lower.startswith('lh'))) or \
+                 ('thermocouple' in col_lower) or \
+                 ('temperature' in col_lower and ('sensor' in col_lower or 'probe' in col_lower)):
+                column_types['thermocouple'].append(col)
+            
+            # Cell balancing - _Balancing_Status_
+            elif '_balancing_status_' in col_lower:
+                column_types['cell_balancing'].append(col)
+            
+            # Time columns
+            elif col_lower in ['time', 'timestamp', 'index'] or 'time' in col_lower:
+                column_types['time'].append(col)
+            
+            # Current
+            elif 'current' in col_lower or 'amp' in col_lower:
+                column_types['current'].append(col)
+            
+            # Power
+            elif 'power' in col_lower or 'watt' in col_lower:
+                column_types['power'].append(col)
+        
+        # Combine all temperature columns for unified temperature analysis
+        all_temp_columns = column_types['temp_stats'] + column_types['temp_cols'] + column_types['thermocouple']
+        column_types['temperature'] = all_temp_columns
+        
+        return column_types
+    
+    def extract_cell_numbers(self, cell_columns: List[str]) -> List[int]:
+        """Extract cell numbers from column names"""
+        cell_numbers = []
+        for col in cell_columns:
+            # Extract numbers from column names
+            numbers = re.findall(r'\d+', col)
+            if numbers:
+                cell_numbers.append(int(numbers[-1]))  # Take the last number
+        return sorted(list(set(cell_numbers)))
+    
+    def apply_preprocessing(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Apply preprocessing to the dataframe
+        """
+        return self.preprocess_dataframe(df)
+    
+    def preprocess_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Preprocess dataframe similar to dmd_extractor methodology
+        """
+        # Make a copy
+        processed_df = df.copy()
+        
+        # Identify time column
+        time_cols = self.identify_column_types(df)['time']
+        if time_cols:
+            time_col = time_cols[0]
+            if time_col != 'Time':
+                processed_df = processed_df.rename(columns={time_col: 'Time'})
+            
+            # Set time as index if not already
+            if 'Time' in processed_df.columns:
+                processed_df['Time'] = pd.to_numeric(processed_df['Time'], errors='coerce')
+                processed_df = processed_df.set_index('Time')
+        
+        # Remove any non-numeric columns except time
+        numeric_cols = processed_df.select_dtypes(include=[np.number]).columns
+        processed_df = processed_df[numeric_cols]
+        
+        # Remove any completely null columns
+        processed_df = processed_df.dropna(axis=1, how='all')
+        
+        # Forward fill missing values (common in time series data)
+        processed_df = processed_df.ffill().bfill()
+        
+        return processed_df
+    
+    def resample_data(self, df: pd.DataFrame, frequency: str = '1S') -> pd.DataFrame:
+        """
+        Resample data to specified frequency (similar to dmd_extractor rounding and grouping)
+        """
+        if not isinstance(df.index, pd.DatetimeIndex):
+            # If index is numeric (seconds), convert to datetime-like resampling
+            df_resampled = df.groupby(df.index.round(0)).mean()
+        else:
+            df_resampled = df.resample(frequency).mean()
+        
+        return df_resampled
+    
+    def calculate_temperature_statistics(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
+        """Calculate temperature statistics across different sensor types"""
+        column_types = self.identify_column_types(df)
+        stats = {}
+        
+        # Thermocouple statistics
+        if column_types['thermocouple']:
+            thermocouple_data = df[column_types['thermocouple']]
+            stats['thermocouple_mean'] = thermocouple_data.mean(axis=1)
+            stats['thermocouple_max'] = thermocouple_data.max(axis=1)
+            stats['thermocouple_min'] = thermocouple_data.min(axis=1)
+            stats['thermocouple_std'] = thermocouple_data.std(axis=1)
+        
+        # BMS temperature statistics
+        if column_types['temp_sensors']:
+            temp_data = df[column_types['temp_sensors']]
+            stats['bms_temp_mean'] = temp_data.mean(axis=1)
+            stats['bms_temp_max'] = temp_data.max(axis=1)
+            stats['bms_temp_min'] = temp_data.min(axis=1)
+        
+        return stats
+    
+    def calculate_voltage_statistics(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
+        """Calculate voltage statistics across cells"""
+        column_types = self.identify_column_types(df)
+        stats = {}
+        
+        if column_types['cell_voltages']:
+            voltage_data = df[column_types['cell_voltages']]
+            stats['voltage_mean'] = voltage_data.mean(axis=1)
+            stats['voltage_max'] = voltage_data.max(axis=1)
+            stats['voltage_min'] = voltage_data.min(axis=1)
+            stats['voltage_std'] = voltage_data.std(axis=1)
+            stats['voltage_range'] = stats['voltage_max'] - stats['voltage_min']
+        
+        return stats
+    
+    def derive_soc_temperature_relationship(self, df: pd.DataFrame, 
+                                         selected_temp_columns: List[str] = None) -> pd.DataFrame:
+        """
+        Derive SOC vs selected temperature columns relationship
+        """
+        column_types = self.identify_column_types(df)
+        
+        # Get SOC data
+        soc_columns = [col for col in column_types['soc_soh'] if 'soc' in col.lower()]
+        if not soc_columns:
+            raise ValueError("No SOC columns found in the data")
+        
+        # Use first SOC column if multiple
+        soc_col = soc_columns[0]
+        
+        # Get temperature columns
+        if selected_temp_columns is None:
+            temp_columns = column_types['thermocouple'] + column_types['temp_sensors']
+        else:
+            temp_columns = selected_temp_columns
+        
+        if not temp_columns:
+            raise ValueError("No temperature columns found or selected")
+        
+        # Create relationship dataframe
+        result_df = pd.DataFrame(index=df.index)
+        result_df['SOC'] = df[soc_col]
+        
+        for temp_col in temp_columns:
+            if temp_col in df.columns:
+                result_df[f'{temp_col}_temp'] = df[temp_col]
+        
+        return result_df.dropna()
+    
+    def calculate_c_rate(self, df: pd.DataFrame, battery_capacity: float = 3.5) -> pd.Series:
+        """
+        Calculate C-rate from current data
+        battery_capacity in Ah (default 3.5Ah for typical cell)
+        """
+        column_types = self.identify_column_types(df)
+        current_columns = column_types['current']
+        
+        if not current_columns:
+            return pd.Series(dtype=float)
+        
+        current_col = current_columns[0]
+        current_data = df[current_col]
+        
+        # C-rate = Current(A) / Capacity(Ah)
+        c_rate = current_data / battery_capacity
+        return c_rate
+    
+    def combine_datasets(self, file_ids: List[str], drive_handler, 
+                        labels: List[str] = None) -> Dict[str, Any]:
+        """
+        Combine multiple datasets from file IDs with proper labeling
+        """
+        if not file_ids:
+            return {"data": [], "summary": "No files provided"}
+        
+        dataframes = []
+        file_names = []
+        
+        # Download and process each file
+        for file_id in file_ids:
+            try:
+                content = drive_handler.download_file_to_memory(file_id)
+                df = self.process_csv_content(content)
+                dataframes.append(df)
+                
+                # Get file name for labeling
+                file_info = drive_handler.get_file_info(file_id)
+                file_names.append(file_info.get('name', f'File_{file_id}'))
+                
+            except Exception as e:
+                print(f"Error processing file {file_id}: {e}")
+                continue
+        
+        if not dataframes:
+            return {"data": [], "summary": "No valid files processed"}
+        
+        # Combine the dataframes
+        combined_df = self._combine_dataframes(dataframes, file_names)
+        
+        return {
+            "data": combined_df.to_dict('records'),
+            "columns": combined_df.columns.tolist(),
+            "summary": f"Combined {len(dataframes)} files with {len(combined_df)} total rows"
+        }
+    
+    def _combine_dataframes(self, dataframes: List[pd.DataFrame], 
+                           labels: List[str] = None) -> pd.DataFrame:
+        """
+        Internal method to combine multiple DataFrames with proper labeling
+        """
+        if not dataframes:
+            return pd.DataFrame()
+        
+        combined_parts = []
+        
+        for i, df in enumerate(dataframes):
+            df_copy = df.copy()
+            
+            # Add dataset label
+            label = labels[i] if labels and i < len(labels) else f"Dataset_{i+1}"
+            df_copy['Dataset'] = label
+            
+            # Reset index to make time a column, then add relative time
+            if isinstance(df_copy.index, pd.DatetimeIndex):
+                df_copy['Absolute_Time'] = df_copy.index
+                df_copy['Relative_Time'] = (df_copy.index - df_copy.index[0]).total_seconds()
+            else:
+                df_copy['Relative_Time'] = df_copy.index
+                df_copy['Absolute_Time'] = df_copy.index
+            
+            combined_parts.append(df_copy)
+        
+        # Concatenate all parts
+        combined_df = pd.concat(combined_parts, ignore_index=True)
+        return combined_df
+    
+    def detect_test_phases(self, df: pd.DataFrame) -> Dict[str, List[Tuple[int, int]]]:
+        """
+        Detect different test phases (charge, discharge, rest) based on current
+        """
+        column_types = self.identify_column_types(df)
+        current_columns = column_types['current']
+        
+        if not current_columns:
+            return {}
+        
+        current_data = df[current_columns[0]].values
+        phases = {
+            'charge': [],
+            'discharge': [],
+            'rest': []
+        }
+        
+        # Simple phase detection based on current sign and magnitude
+        current_threshold = 0.1  # A
+        
+        phase_start = 0
+        current_phase = 'rest'
+        
+        for i in range(1, len(current_data)):
+            current_val = current_data[i]
+            
+            # Determine current phase
+            if abs(current_val) < current_threshold:
+                new_phase = 'rest'
+            elif current_val > current_threshold:
+                new_phase = 'charge'
+            else:
+                new_phase = 'discharge'
+            
+            # Check for phase change
+            if new_phase != current_phase:
+                # End previous phase
+                if i - phase_start > 10:  # Minimum 10 data points
+                    phases[current_phase].append((phase_start, i-1))
+                
+                # Start new phase
+                phase_start = i
+                current_phase = new_phase
+        
+        # Add final phase
+        if len(current_data) - phase_start > 10:
+            phases[current_phase].append((phase_start, len(current_data)-1))
+        
+        return phases
+    
+    def calculate_energy_efficiency(self, df: pd.DataFrame) -> Dict[str, float]:
+        """
+        Calculate energy efficiency metrics
+        """
+        column_types = self.identify_column_types(df)
+        
+        if not column_types['current'] or not column_types['cell_voltages']:
+            return {}
+        
+        current_col = column_types['current'][0]
+        voltage_col = column_types['cell_voltages'][0]
+        
+        current = df[current_col]
+        voltage = df[voltage_col]
+        
+        # Calculate power
+        power = current * voltage
+        
+        # Separate charge and discharge energy
+        charge_mask = current > 0
+        discharge_mask = current < 0
+        
+        # Calculate time intervals (assuming uniform sampling)
+        if len(df) > 1:
+            dt = (df.index[1] - df.index[0]) if hasattr(df.index[1] - df.index[0], 'total_seconds') else df.index[1] - df.index[0]
+            if hasattr(dt, 'total_seconds'):
+                dt = dt.total_seconds() / 3600  # Convert to hours
+            else:
+                dt = dt / 3600  # Assume seconds, convert to hours
+        else:
+            dt = 1/3600  # 1 second default
+        
+        charge_energy = (power[charge_mask] * dt).sum()
+        discharge_energy = abs((power[discharge_mask] * dt).sum())
+        
+        efficiency = discharge_energy / charge_energy if charge_energy > 0 else 0
+        
+        return {
+            'charge_energy_wh': charge_energy,
+            'discharge_energy_wh': discharge_energy,
+            'round_trip_efficiency': efficiency
+        }
+    
+    def calculate_statistics(self, df):
+        """Calculate basic statistics for the dataframe"""
+        try:
+            # Basic statistics
+            stats = {
+                'shape': df.shape,
+                'dtypes': {col: str(dtype) for col, dtype in df.dtypes.to_dict().items()},
+                'memory_usage': int(df.memory_usage(deep=True).sum()),
+                'null_counts': df.isnull().sum().to_dict(),
+                'numeric_stats': {}
+            }
+            
+            # Get numeric columns for additional stats
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                # Convert numpy values to Python native types for JSON serialization
+                mean_vals = df[numeric_cols].mean()
+                std_vals = df[numeric_cols].std()
+                min_vals = df[numeric_cols].min()
+                max_vals = df[numeric_cols].max()
+                
+                stats['numeric_stats'] = {
+                    'mean': {col: float(val) if pd.notna(val) else None for col, val in mean_vals.items()},
+                    'std': {col: float(val) if pd.notna(val) else None for col, val in std_vals.items()},
+                    'min': {col: float(val) if pd.notna(val) else None for col, val in min_vals.items()},
+                    'max': {col: float(val) if pd.notna(val) else None for col, val in max_vals.items()}
+                }
+            
+            # Time range if time column exists
+            time_cols = [col for col in df.columns if 'time' in col.lower()]
+            if time_cols:
+                time_col = time_cols[0]
+                if pd.api.types.is_datetime64_any_dtype(df[time_col]):
+                    duration = (df[time_col].max() - df[time_col].min()).total_seconds()
+                    stats['time_range'] = {
+                        'start': df[time_col].min().isoformat() if hasattr(df[time_col].min(), 'isoformat') else str(df[time_col].min()),
+                        'end': df[time_col].max().isoformat() if hasattr(df[time_col].max(), 'isoformat') else str(df[time_col].max()),
+                        'duration': float(duration)
+                    }
+            
+            return stats
+            
+        except Exception as e:
+            print(f"Error calculating statistics: {e}")
+            return {
+                'shape': df.shape,
+                'dtypes': {},
+                'memory_usage': 0,
+                'null_counts': {},
+                'numeric_stats': {}
+            }
