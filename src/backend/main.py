@@ -1,11 +1,8 @@
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
 from typing import List, Dict, Optional, Any
-import pandas as pd
 import os
 from dotenv import load_dotenv
-import json
 
 from drive_handler import GoogleDriveHandler
 from data_processor import BatteryDataProcessor
@@ -54,7 +51,7 @@ async def startup_event():
             os.chdir(parent_dir)  # Change to parent directory to find credentials.json
             drive_handler = GoogleDriveHandler()
             os.chdir(current_dir)  # Change back to original directory
-            print(f"✅ Google Drive handler initialized")
+            print("✅ Google Drive handler initialized")
             print(f"📁 Connected to Google Drive folder: {DRIVE_FOLDER_ID}")
         else:
             print(f"❌ Credentials file not found at: {credentials_path}")
@@ -100,62 +97,13 @@ async def get_files_in_folder(folder_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching files: {str(e)}")
 
-@app.get("/columns/{file_id}")
-async def get_file_columns(file_id: str):
-    """Get available columns in a CSV file"""
-    try:
-        # Get file content to analyze columns
-        content = drive_handler.download_file_content(file_id)
-        df = data_processor.process_csv_content(content, sample_size=10)
-        column_types = data_processor.identify_column_types(df)
-        return column_types
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error analyzing columns: {str(e)}")
+"""
+Removed legacy simplified endpoints (/columns, duplicate /data) in favor of unified /api versions.
+"""
 
-@app.get("/data/{file_id}")
-async def get_file_data(
-    file_id: str,
-    selected_columns: Optional[str] = Query(None, description="Comma-separated list of columns"),
-    preprocess: bool = Query(False, description="Apply preprocessing"),
-    resample: Optional[str] = Query(None, description="Resample rate")
-):
-    """Get processed data from a CSV file"""
-    try:
-        content = drive_handler.download_file_content(file_id)
-        df = data_processor.process_csv_content(content)
-        
-        # Filter columns if specified
-        if selected_columns:
-            cols = [col.strip() for col in selected_columns.split(',')]
-            # Only include columns that exist in the dataframe
-            valid_cols = [col for col in cols if col in df.columns]
-            if valid_cols:
-                df = df[valid_cols]
-        
-        # Apply preprocessing if requested
-        if preprocess:
-            df = data_processor.apply_preprocessing(df)
-        
-        # Apply resampling if requested  
-        if resample:
-            df = data_processor.resample_data(df, resample)
-        
-        # Get column types and statistics
-        column_types = data_processor.identify_column_types(df)
-        stats = data_processor.calculate_statistics(df)
-        
-        return {
-            "data": df.to_dict('records'),
-            "index": df.index.tolist() if hasattr(df.index, 'tolist') else list(df.index),
-            "columns": df.columns.tolist(),
-            "statistics": {
-                "shape": df.shape,
-                "column_types": column_types,
-                **stats
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+"""
+Removed legacy /data endpoint; use /api/data/{file_id} instead.
+"""
 
 @app.post("/combine")
 async def combine_files(request: dict):
@@ -170,41 +118,9 @@ async def combine_files(request: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error combining files: {str(e)}")
 
-@app.get("/download/processed-data")
-async def download_processed_data(
-    file_ids: str = Query(..., description="Comma-separated file IDs"),
-    selected_columns: Optional[str] = Query(None, description="Comma-separated column names")
-):
-    """Download processed data as CSV"""
-    try:
-        file_id_list = file_ids.split(',')
-        
-        if len(file_id_list) == 1:
-            # Single file download
-            content = drive_handler.download_file_content(file_id_list[0])
-            df = data_processor.process_csv_content(content)
-        else:
-            # Multiple files - combine them
-            combined_data = data_processor.combine_datasets(file_id_list, drive_handler)
-            df = pd.DataFrame(combined_data["data"])
-        
-        # Filter columns if specified
-        if selected_columns:
-            cols = [col.strip() for col in selected_columns.split(',')]
-            valid_cols = [col for col in cols if col in df.columns]
-            if valid_cols:
-                df = df[valid_cols]
-        
-        # Convert to CSV
-        csv_content = df.to_csv(index=False)
-        
-        return Response(
-            content=csv_content,
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=battery_data.csv"}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error downloading data: {str(e)}")
+"""
+Removed legacy /download/processed-data endpoint; use /api/download/processed-data instead.
+"""
 
 @app.get("/api/folders")
 async def get_battery_test_folders():
@@ -481,127 +397,17 @@ async def combine_datasets(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error combining datasets: {str(e)}")
 
-@app.get("/api/analysis/temperature-stats/{file_id}")
-async def get_temperature_statistics(file_id: str):
-    """Get temperature statistics for a dataset"""
-    try:
-        df = drive_handler.get_csv_as_dataframe(file_id)
-        if df is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        df = data_processor.preprocess_dataframe(df)
-        temp_stats = data_processor.calculate_temperature_statistics(df)
-        
-        # Convert Series to dict for JSON serialization
-        stats_dict = {}
-        for key, series in temp_stats.items():
-            stats_dict[key] = {
-                "data": series.tolist(),
-                "index": series.index.tolist(),
-                "mean": float(series.mean()),
-                "max": float(series.max()),
-                "min": float(series.min()),
-                "std": float(series.std())
-            }
-        
-        return {
-            "success": True,
-            "temperature_statistics": stats_dict
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calculating temperature statistics: {str(e)}")
+"""
+Removed unused analysis endpoints:
+    /api/analysis/temperature-stats/{file_id}
+    /api/analysis/voltage-stats/{file_id}
+    /api/analysis/soc-temperature
+    /api/analysis/phases/{file_id}
+    /api/analysis/efficiency/{file_id}
 
-@app.get("/api/analysis/voltage-stats/{file_id}")
-async def get_voltage_statistics(file_id: str):
-    """Get voltage statistics for a dataset"""
-    try:
-        df = drive_handler.get_csv_as_dataframe(file_id)
-        if df is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        df = data_processor.preprocess_dataframe(df)
-        voltage_stats = data_processor.calculate_voltage_statistics(df)
-        
-        # Convert Series to dict for JSON serialization
-        stats_dict = {}
-        for key, series in voltage_stats.items():
-            stats_dict[key] = {
-                "data": series.tolist(),
-                "index": series.index.tolist(),
-                "mean": float(series.mean()),
-                "max": float(series.max()),
-                "min": float(series.min()),
-                "std": float(series.std())
-            }
-        
-        return {
-            "success": True,
-            "voltage_statistics": stats_dict
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calculating voltage statistics: {str(e)}")
-
-@app.post("/api/analysis/soc-temperature")
-async def derive_soc_temperature_relationship(
-    file_id: str,
-    temperature_columns: Optional[List[str]] = None
-):
-    """Derive SOC vs temperature relationship"""
-    try:
-        df = drive_handler.get_csv_as_dataframe(file_id)
-        if df is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        df = data_processor.preprocess_dataframe(df)
-        soc_temp_df = data_processor.derive_soc_temperature_relationship(
-            df, temperature_columns
-        )
-        
-        return {
-            "success": True,
-            "data": soc_temp_df.to_dict('records'),
-            "index": soc_temp_df.index.tolist(),
-            "columns": list(soc_temp_df.columns)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deriving SOC-temperature relationship: {str(e)}")
-
-@app.get("/api/analysis/phases/{file_id}")
-async def detect_test_phases(file_id: str):
-    """Detect test phases (charge, discharge, rest)"""
-    try:
-        df = drive_handler.get_csv_as_dataframe(file_id)
-        if df is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        df = data_processor.preprocess_dataframe(df)
-        phases = data_processor.detect_test_phases(df)
-        
-        return {
-            "success": True,
-            "phases": phases,
-            "phase_count": {phase: len(intervals) for phase, intervals in phases.items()}
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error detecting test phases: {str(e)}")
-
-@app.get("/api/analysis/efficiency/{file_id}")
-async def calculate_energy_efficiency(file_id: str):
-    """Calculate energy efficiency metrics"""
-    try:
-        df = drive_handler.get_csv_as_dataframe(file_id)
-        if df is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        df = data_processor.preprocess_dataframe(df)
-        efficiency = data_processor.calculate_energy_efficiency(df)
-        
-        return {
-            "success": True,
-            "efficiency_metrics": efficiency
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error calculating efficiency: {str(e)}")
+These were tied to advanced plotting features now removed from the frontend.
+Keeping this comment here for traceability. If needed in future, retrieve from git history.
+"""
 
 if __name__ == "__main__":
     import uvicorn

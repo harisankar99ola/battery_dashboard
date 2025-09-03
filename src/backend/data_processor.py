@@ -1,10 +1,8 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
-from scipy import signal
+from typing import Dict, List, Optional, Any
 from sklearn.preprocessing import StandardScaler
 import re
-import json
 
 class BatteryDataProcessor:
     """
@@ -190,76 +188,6 @@ class BatteryDataProcessor:
         
         return df_resampled
     
-    def calculate_temperature_statistics(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
-        """Calculate temperature statistics across different sensor types"""
-        column_types = self.identify_column_types(df)
-        stats = {}
-        
-        # Thermocouple statistics
-        if column_types['thermocouple']:
-            thermocouple_data = df[column_types['thermocouple']]
-            stats['thermocouple_mean'] = thermocouple_data.mean(axis=1)
-            stats['thermocouple_max'] = thermocouple_data.max(axis=1)
-            stats['thermocouple_min'] = thermocouple_data.min(axis=1)
-            stats['thermocouple_std'] = thermocouple_data.std(axis=1)
-        
-        # BMS temperature statistics
-        if column_types['temp_sensors']:
-            temp_data = df[column_types['temp_sensors']]
-            stats['bms_temp_mean'] = temp_data.mean(axis=1)
-            stats['bms_temp_max'] = temp_data.max(axis=1)
-            stats['bms_temp_min'] = temp_data.min(axis=1)
-        
-        return stats
-    
-    def calculate_voltage_statistics(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
-        """Calculate voltage statistics across cells"""
-        column_types = self.identify_column_types(df)
-        stats = {}
-        
-        if column_types['cell_voltages']:
-            voltage_data = df[column_types['cell_voltages']]
-            stats['voltage_mean'] = voltage_data.mean(axis=1)
-            stats['voltage_max'] = voltage_data.max(axis=1)
-            stats['voltage_min'] = voltage_data.min(axis=1)
-            stats['voltage_std'] = voltage_data.std(axis=1)
-            stats['voltage_range'] = stats['voltage_max'] - stats['voltage_min']
-        
-        return stats
-    
-    def derive_soc_temperature_relationship(self, df: pd.DataFrame, 
-                                         selected_temp_columns: List[str] = None) -> pd.DataFrame:
-        """
-        Derive SOC vs selected temperature columns relationship
-        """
-        column_types = self.identify_column_types(df)
-        
-        # Get SOC data
-        soc_columns = [col for col in column_types['soc_soh'] if 'soc' in col.lower()]
-        if not soc_columns:
-            raise ValueError("No SOC columns found in the data")
-        
-        # Use first SOC column if multiple
-        soc_col = soc_columns[0]
-        
-        # Get temperature columns
-        if selected_temp_columns is None:
-            temp_columns = column_types['thermocouple'] + column_types['temp_sensors']
-        else:
-            temp_columns = selected_temp_columns
-        
-        if not temp_columns:
-            raise ValueError("No temperature columns found or selected")
-        
-        # Create relationship dataframe
-        result_df = pd.DataFrame(index=df.index)
-        result_df['SOC'] = df[soc_col]
-        
-        for temp_col in temp_columns:
-            if temp_col in df.columns:
-                result_df[f'{temp_col}_temp'] = df[temp_col]
-        
-        return result_df.dropna()
     
     def calculate_c_rate(self, df: pd.DataFrame, battery_capacity: float = 3.5) -> pd.Series:
         """
@@ -348,98 +276,9 @@ class BatteryDataProcessor:
         combined_df = pd.concat(combined_parts, ignore_index=True)
         return combined_df
     
-    def detect_test_phases(self, df: pd.DataFrame) -> Dict[str, List[Tuple[int, int]]]:
-        """
-        Detect different test phases (charge, discharge, rest) based on current
-        """
-        column_types = self.identify_column_types(df)
-        current_columns = column_types['current']
-        
-        if not current_columns:
-            return {}
-        
-        current_data = df[current_columns[0]].values
-        phases = {
-            'charge': [],
-            'discharge': [],
-            'rest': []
-        }
-        
-        # Simple phase detection based on current sign and magnitude
-        current_threshold = 0.1  # A
-        
-        phase_start = 0
-        current_phase = 'rest'
-        
-        for i in range(1, len(current_data)):
-            current_val = current_data[i]
-            
-            # Determine current phase
-            if abs(current_val) < current_threshold:
-                new_phase = 'rest'
-            elif current_val > current_threshold:
-                new_phase = 'charge'
-            else:
-                new_phase = 'discharge'
-            
-            # Check for phase change
-            if new_phase != current_phase:
-                # End previous phase
-                if i - phase_start > 10:  # Minimum 10 data points
-                    phases[current_phase].append((phase_start, i-1))
-                
-                # Start new phase
-                phase_start = i
-                current_phase = new_phase
-        
-        # Add final phase
-        if len(current_data) - phase_start > 10:
-            phases[current_phase].append((phase_start, len(current_data)-1))
-        
-        return phases
-    
-    def calculate_energy_efficiency(self, df: pd.DataFrame) -> Dict[str, float]:
-        """
-        Calculate energy efficiency metrics
-        """
-        column_types = self.identify_column_types(df)
-        
-        if not column_types['current'] or not column_types['cell_voltages']:
-            return {}
-        
-        current_col = column_types['current'][0]
-        voltage_col = column_types['cell_voltages'][0]
-        
-        current = df[current_col]
-        voltage = df[voltage_col]
-        
-        # Calculate power
-        power = current * voltage
-        
-        # Separate charge and discharge energy
-        charge_mask = current > 0
-        discharge_mask = current < 0
-        
-        # Calculate time intervals (assuming uniform sampling)
-        if len(df) > 1:
-            dt = (df.index[1] - df.index[0]) if hasattr(df.index[1] - df.index[0], 'total_seconds') else df.index[1] - df.index[0]
-            if hasattr(dt, 'total_seconds'):
-                dt = dt.total_seconds() / 3600  # Convert to hours
-            else:
-                dt = dt / 3600  # Assume seconds, convert to hours
-        else:
-            dt = 1/3600  # 1 second default
-        
-        charge_energy = (power[charge_mask] * dt).sum()
-        discharge_energy = abs((power[discharge_mask] * dt).sum())
-        
-        efficiency = discharge_energy / charge_energy if charge_energy > 0 else 0
-        
-        return {
-            'charge_energy_wh': charge_energy,
-            'discharge_energy_wh': discharge_energy,
-            'round_trip_efficiency': efficiency
-        }
+    # Removed advanced analysis methods (temperature/voltage statistics, SOC-temperature relationships,
+    # phase detection, and energy efficiency) as the frontend now only needs basic overview data.
+    # Retrieve previous versions from git history if reintroduction is required.
     
     def calculate_statistics(self, df):
         """Calculate basic statistics for the dataframe"""

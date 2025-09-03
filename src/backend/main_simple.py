@@ -1,10 +1,9 @@
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from typing import Optional
 import pandas as pd
 import os
-import asyncio
 from dotenv import load_dotenv
 
 from drive_handler import GoogleDriveHandler
@@ -369,6 +368,33 @@ async def get_file_data(
         return data_processor.clean_for_json(full_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
+
+# ---------------------------------------------------------------------------
+# Alias endpoints for new /api/* path used by simplified frontend
+# ---------------------------------------------------------------------------
+@app.get("/api/columns/{file_id}")
+async def api_get_file_columns(file_id: str):
+    """Alias of /columns for backward/forward compatibility."""
+    return await get_file_columns(file_id)  # Reuse existing logic
+
+@app.get("/api/data/{file_id}")
+async def api_get_file_data(
+    file_id: str,
+    selected_columns: Optional[str] = Query(None, description="Comma-separated list of columns"),
+    preprocess: bool = Query(False, description="Apply preprocessing"),
+    resample: Optional[str] = Query(None, description="Resample rate"),
+    preview_only: bool = Query(False, description="Load only preview data for quick stats"),
+    max_rows: Optional[int] = Query(None, description="Maximum number of rows to load")
+):
+    """Alias of /data for backward/forward compatibility."""
+    return await get_file_data(
+        file_id=file_id,
+        selected_columns=selected_columns,
+        preprocess=preprocess,
+        resample=resample,
+        preview_only=preview_only,
+        max_rows=max_rows
+    )
 
 @app.post("/combine")
 async def combine_files(request: dict):
