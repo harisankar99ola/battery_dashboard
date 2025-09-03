@@ -6,6 +6,7 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 import requests
+from plotly.subplots import make_subplots
 
 from components.plots import BatteryPlots
 
@@ -805,9 +806,7 @@ def update_main_plot(plot_type, current_data, combined_data, selected_temp_cols,
         
         # Generate plot based on type
         if plot_type == "overview":
-            print("🎨 Creating overview plot...")
-            result_fig = create_data_overview_plot(df, column_types)
-            print(f"✅ Overview plot created with {len(result_fig.data)} traces")
+            result_fig = create_data_overview_plot(df)
             return result_fig
         
         elif plot_type == "temperature":
@@ -881,44 +880,27 @@ def update_main_plot(plot_type, current_data, combined_data, selected_temp_cols,
         return go.Figure()
 
 
-def create_data_overview_plot(df: pd.DataFrame, column_types: dict) -> go.Figure:
+def create_data_overview_plot(df: pd.DataFrame) -> go.Figure:
     """Create a simple overview plot showing the first few columns over time"""
-    fig = go.Figure()
-    
-    # Get time column if available
-    time_col = None
-    if df.index.name and 'time' in df.index.name.lower():
-        x_data = df.index
-        x_title = df.index.name
-    elif 'time' in df.columns[0].lower():
-        time_col = df.columns[0]
-        x_data = df[time_col]
-        x_title = time_col
-    else:
-        x_data = df.index
-        x_title = "Index"
-    
-    # Plot first few numeric columns
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    plot_cols = numeric_cols[:5]  # Limit to first 5 columns
-    
-    colors = px.colors.qualitative.Set3
-    for i, col in enumerate(plot_cols):
-        fig.add_trace(go.Scatter(
-            x=x_data,
-            y=df[col],
-            mode='lines',
-            name=col,
-            line=dict(color=colors[i % len(colors)])
-        ))
-    
-    fig.update_layout(
-        title="Data Overview - Selected Columns",
-        xaxis_title=x_title,
-        yaxis_title="Values",
-        template="plotly_white",
-        height=600
-    )
+    cell_voltages_cols = [col for col in df.columns if 'Cell_Voltage_Cell' in col]
+    temp_cols = [col for col in df.columns if 'BMS00_Pack_' in col if '02' not in col and '05' not in col]
+    thermocouple_cols = [col for col in df.columns if 'RH' in col or 'LH' in col]
+    cell_balancing_cols = [col for col in df.columns if '_Balancing_Status_' in col]
+    pdu_temp_cols = [col for col in df.columns if 'BMS00_PDU_Temperature_' in col] 
+    soc_soh_cols = [col for col in df.columns if 'Pack_S' in col]
+    fig = make_subplots(rows=3, cols=2, shared_xaxes=True, subplot_titles=('Cell Voltages Over Time','BMS temperature sensor data' ,'Current Over Time','Thermocouple Data', 'SoC and SoH Over Time', 'Cell Balancing Status'))
+    for col in cell_voltages_cols:
+        fig.add_trace(go.Scatter(x=df.index, y=df[col], mode='lines', name=col), row=1, col=1)
+    for col in temp_cols+pdu_temp_cols:
+        fig.add_trace(go.Scatter(x=df.index, y=df[col], mode='lines', name=col), row=1, col=2)
+    fig.add_trace(go.Scatter(x=df.index, y=df['Battery_Current_00_avg'], mode='lines', name='Battery Current'), row=2, col=1)
+    for col in thermocouple_cols:
+        fig.add_trace(go.Scatter(x=df.index, y=df[col], mode='lines', name=col), row=2, col=2)
+    for col in soc_soh_cols:
+        fig.add_trace(go.Scatter(x=df.index, y=df[col], mode='lines', name=col), row=3, col=1)
+    for col in cell_balancing_cols:
+        fig.add_trace(go.Scatter(x=df.index, y=df[col], mode='lines', name=col), row=3, col=2)
+    fig.update_layout(height=800, width=1100, title_text="Data Overview", template='plotly_white')
     
     return fig
 
